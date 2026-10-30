@@ -350,4 +350,24 @@ mod tests {
 
         assert_eq!(offset.value, 37);
     }
+
+    #[test]
+    fn custom_allocator() {
+        use crate::test_alloc::{CountingAllocator, Counts};
+
+        let counts = Counts::default();
+        let alloc = CountingAllocator(&counts);
+
+        let mut offset = Arc::into_raw_offset(Arc::new_in(1, alloc));
+        let other = offset.clone();
+        assert_eq!(OffsetArc::strong_count(&offset), 2);
+        // Shared, so `make_mut` clones into a new allocation from the same allocator.
+        *offset.make_mut() += 1;
+        assert_eq!((*offset, *other), (2, 1));
+        assert_eq!(*offset.borrow_arc().clone_arc(), 2);
+        drop(other);
+        assert_eq!(Arc::try_unwrap(Arc::from_raw_offset(offset)), Ok(2));
+
+        assert_eq!(counts.get(), (2, 2));
+    }
 }

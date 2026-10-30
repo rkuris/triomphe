@@ -180,13 +180,15 @@ impl<T> Arc<T> {
             phantom: PhantomData,
         })
     }
+}
 
+impl<T, A: Allocator> Arc<T, A> {
     /// Temporarily converts |self| into a bonafide OffsetArc and exposes it to the
     /// provided callback. The refcount is not modified.
     #[inline(always)]
     pub fn with_raw_offset_arc<F, U>(&self, f: F) -> U
     where
-        F: FnOnce(&OffsetArc<T>) -> U,
+        F: FnOnce(&OffsetArc<T, A>) -> U,
     {
         // Synthesize transient Arc, which never touches the refcount of the ArcInner.
         // Store transient in `ManuallyDrop`, to leave the refcount untouched.
@@ -195,9 +197,7 @@ impl<T> Arc<T> {
         // Expose the transient Arc to the callback, which may clone it if it wants.
         f(&transient)
     }
-}
 
-impl<T, A: Allocator> Arc<T, A> {
     /// Converts the `Arc` to `UniqueArc` if the `Arc` has exactly one strong reference.
     ///
     /// Otherwise, `None` is returned and the `Arc` is dropped.
@@ -320,11 +320,11 @@ impl<T: ?Sized, A: Allocator> Arc<T, A> {
     }
 }
 
-impl<T: ?Sized> Arc<T> {
+impl<T: ?Sized, A: Allocator> Arc<T, A> {
     /// Converts a `OffsetArc` into an `Arc`. This consumes the `OffsetArc`, so the refcount
     /// is not modified.
     #[inline]
-    pub const fn from_raw_offset(a: OffsetArc<T>) -> Self {
+    pub const fn from_raw_offset(a: OffsetArc<T, A>) -> Self {
         let a = ManuallyDrop::new(a);
         let ptr = mdref(&a).ptr.as_ptr();
         unsafe { Arc::from_raw(ptr) }
@@ -333,7 +333,7 @@ impl<T: ?Sized> Arc<T> {
     /// Converts an `Arc` into a `OffsetArc`. This consumes the `Arc`, so the refcount
     /// is not modified.
     #[inline]
-    pub const fn into_raw_offset(a: Self) -> OffsetArc<T> {
+    pub const fn into_raw_offset(a: Self) -> OffsetArc<T, A> {
         unsafe {
             OffsetArc {
                 ptr: ptr::NonNull::new_unchecked(Arc::into_raw(a) as *mut T),
@@ -344,7 +344,7 @@ impl<T: ?Sized> Arc<T> {
 
     /// Produce a pointer to the data that can be converted back to an `Arc`.
     #[inline]
-    pub const fn borrow_arc(&self) -> ArcBorrow<'_, T> {
+    pub const fn borrow_arc(&self) -> ArcBorrow<'_, T, A> {
         unsafe { ArcBorrow(NonNull::new_unchecked(self.as_ptr() as *mut T), PhantomData) }
     }
 }
@@ -1154,8 +1154,14 @@ mod tests {
         let unique = Arc::into_unique(Arc::new_in(41, CountingAllocator)).unwrap();
         assert_eq!(crate::UniqueArc::into_inner(unique), 41);
 
-        assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), allocations + 6);
-        assert_eq!(DEALLOCATIONS.load(Ordering::Relaxed), deallocations + 6);
+        let offset = Arc::into_raw_offset(Arc::new_in(43, CountingAllocator));
+        let cloned = offset.borrow_arc().clone_arc();
+        assert_eq!(Arc::count(&cloned), 2);
+        drop(offset);
+        assert_eq!(Arc::try_unwrap(cloned), Ok(43));
+
+        assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), allocations + 7);
+        assert_eq!(DEALLOCATIONS.load(Ordering::Relaxed), deallocations + 7);
     }
 
     #[test]
